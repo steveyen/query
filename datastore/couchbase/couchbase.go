@@ -519,6 +519,7 @@ type keyspace struct {
 	deleted     bool
 	viewIndexer datastore.Indexer // View index provider
 	gsiIndexer  datastore.Indexer // GSI index provider
+	indexers    map[string]datastore.Indexer
 }
 
 //
@@ -585,6 +586,17 @@ func newKeyspace(p *namespace, name string) (datastore.Keyspace, errors.Error) {
 	rv.gsiIndexer, qerr = gsi.NewGSIIndexer(p.store.URL(), p.Name(), name)
 	if qerr != nil {
 		logging.Warnf("Error loading GSI indexes for keyspace %s. Error %v", name, qerr)
+	}
+
+	rv.indexers = map[string]datastore.Indexer{}
+	for regName, regEntry := range indexerProviderRegistry {
+		indexer, err := regEntry.Create(p.store.URL(), p.Name(), name)
+		if err != nil {
+			logging.Warnf("Error with indexer provider %s create of keyspace %s. Error %v",
+				regName, name, err)
+			continue
+		}
+		rv.indexers[regName] = indexer
 	}
 
 	// Create a bucket updater that will keep the couchbase bucket fresh.
@@ -668,6 +680,10 @@ func (b *keyspace) Indexer(name datastore.IndexType) (datastore.Indexer, errors.
 	case datastore.VIEW:
 		return b.viewIndexer, nil
 	default:
+		indexer, ok := b.indexers[string(name)]
+		if ok && indexer != nil {
+			return indexer, nil
+		}
 		return nil, errors.NewCbIndexerNotImplementedError(nil, fmt.Sprintf("Type %s", name))
 	}
 }
@@ -679,6 +695,11 @@ func (b *keyspace) Indexers() ([]datastore.Indexer, errors.Error) {
 	}
 
 	indexers = append(indexers, b.viewIndexer)
+
+	for _, indexer := range b.indexers {
+		indexers = append(indexers, indexer)
+	}
+
 	return indexers, nil
 }
 
