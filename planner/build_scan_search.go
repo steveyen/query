@@ -10,6 +10,7 @@
 package planner
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/couchbase/query/algebra"
@@ -263,4 +264,84 @@ func (this *builder) sargableSearchCondition(index datastore.Index, subset expre
 	}
 
 	return SubsetOf(subset, cond), cond, origCond, nil
+}
+
+func (this *builder) buildFlexScan(node *algebra.KeyspaceTerm,
+	baseKeyspace *base.BaseKeyspace, id expression.Expression, indexes []datastore.Index,
+	primaryKey expression.Expressions, formalizer *expression.Formalizer) (
+	rv plan.SecondaryScan, rvSargLength int, err error) {
+	if node.IsUnderNL() {
+		return nil, 0, nil
+	}
+
+	// NOTE: LET's are rewritten / inlined into the WHERE.
+	where := this.where.Copy()
+	where, _ = NewDNF(where, true /* like */, false /* doDNF */).Map(where)
+
+	bindings := gatherUnnestBindings(this.from, nil)
+
+	var opaque interface{} // Allows SargableFlex() to optimize.
+
+	for _, idx := range indexes {
+		index, ok := idx.(datastore.FTSIndexFlex)
+		if !ok {
+			continue
+		}
+
+		sargLength, exact, searchQuery, searchOptions, opaqueOut, err :=
+			index.SargableFlex(node.Alias(), bindings, where, opaque)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		opaque = opaqueOut
+
+		if (sargLength < rvSargLength) ||
+			(sargLength == rvSargLength && !exact) {
+			continue // Keep looping as a previous index is still better.
+		}
+
+		all := expression.NewConstant("_all")
+
+		out := fmt.Sprintf("%p", searchQuery)
+
+		if searchOptions == nil {
+			searchOptions = map[string]interface{}{}
+		}
+		searchOptions["index"] = index.Name()
+		searchOptions["indexId"] = index.Id()
+		searchOptions["out"] = out
+		searchOptions["slv"] = out // TODO: slv renamed to out, so remove one day.
+
+		// TODO: unsupported features for now.
+		var orders []string
+		var covers expression.Covers
+		var filterCovers map[*expression.Cover]value.Value
+
+		rv = plan.NewIndexFtsSearch(idx, node, plan.NewFTSSearchInfo(all,
+			expression.NewConstant(value.NewValue(searchQuery)),
+			expression.NewConstant(value.NewValue(searchOptions)),
+			this.offset, this.limit, orders, out), covers, filterCovers)
+
+		rvSargLength = sargLength
+	}
+
+	return rv, rvSargLength, nil
+}
+
+// Recursively gather UNNEST bindings.
+func gatherUnnestBindings(f algebra.FromTerm, a expression.Bindings) expression.Bindings {
+	if f == nil {
+		return a
+	}
+
+	if j, ok := f.(algebra.JoinTerm); ok {
+		a = gatherUnnestBindings(j.Left(), a) // Left-most first.
+	}
+
+	if u, ok := f.(*algebra.Unnest); ok && !u.Outer() {
+		a = append(a, expression.NewSimpleBinding(u.Alias(), u.Expression()))
+	}
+
+	return a
 }

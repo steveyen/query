@@ -209,6 +209,12 @@ func (this *builder) buildSubsetScan(keyspace datastore.Keyspace, node *algebra.
 	}
 	order := this.order
 
+	// TODO: Trying a flex scan first, before other scan types, may be wrong?
+	scan, _, err := this.buildFlexScan(node, baseKeyspace, id, indexes, primaryKey, formalizer)
+	if scan != nil || err != nil {
+		return scan, nil, err
+	}
+
 	// Prefer OR scan
 	pred := baseKeyspace.DnfPred()
 	if join && baseKeyspace.OnclauseOnly() {

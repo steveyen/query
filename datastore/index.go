@@ -472,6 +472,16 @@ type Verify interface {
 	Evaluate(item value.Value) (bool, errors.Error)
 }
 
+type FTSIndexFlex interface {
+	FTSIndex
+
+	SargableFlex(nodeAlias string, bindings expression.Bindings,
+		where expression.Expression, opaque interface{}) (
+		sargLength int, exact bool, searchQuery,
+		searchOptions map[string]interface{}, opaqueOut interface{},
+		err errors.Error)
+}
+
 ////////////////////////////////////////////////////////////////////////
 //
 // End of FTS Index API
